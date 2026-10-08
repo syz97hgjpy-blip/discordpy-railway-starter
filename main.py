@@ -3,9 +3,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
-
 TOKEN = os.getenv("DISCORD_TOKEN")
-
 
 intents = discord.Intents.default()
 
@@ -19,7 +17,7 @@ class EmbedModal(discord.ui.Modal, title="Embed erstellen"):
 
     embed_title = discord.ui.TextInput(
         label="Titel",
-        placeholder="z. B. SERVER REGELN",
+        placeholder="z. B. SERVER RULES",
         required=True,
         max_length=256
     )
@@ -42,16 +40,13 @@ class EmbedModal(discord.ui.Modal, title="Embed erstellen"):
 
     async def on_submit(self, interaction: discord.Interaction):
 
-        color_text = self.embed_color.value.strip()
-
-        if color_text.startswith("#"):
-            color_text = color_text[1:]
+        color_text = self.embed_color.value.strip().replace("#", "")
 
         try:
-            color = int(color_text, 16)
-
             if len(color_text) != 6:
                 raise ValueError
+
+            color = int(color_text, 16)
 
         except ValueError:
             await interaction.response.send_message(
@@ -66,11 +61,9 @@ class EmbedModal(discord.ui.Modal, title="Embed erstellen"):
             color=discord.Color(color)
         )
 
-        view = ChannelSelectView(embed)
-
         await interaction.response.send_message(
             "📢 **Wähle den Kanal aus, in dem der Embed gesendet werden soll:**",
-            view=view,
+            view=ChannelSelectView(embed),
             ephemeral=True
         )
 
@@ -96,18 +89,18 @@ class ChannelSelectView(discord.ui.View):
 
         channel = select.values[0]
 
-        if not isinstance(channel, discord.TextChannel):
+        # Discord kann hier verschiedene Channel-Typen liefern.
+        # Wir prüfen deshalb nur, ob der Kanal Nachrichten senden kann.
+        if not hasattr(channel, "send"):
             await interaction.response.send_message(
-                "❌ Bitte wähle einen normalen Textkanal.",
+                "❌ Dieser Kanal kann keine Nachrichten empfangen.",
                 ephemeral=True
             )
             return
 
-        self.selected_channel = channel
-
         await interaction.response.send_message(
             f"✅ Kanal ausgewählt: {channel.mention}\n"
-            f"Drücke **Senden**, um den Embed zu posten.",
+            f"Drücke **Embed senden**, um den Embed zu posten.",
             view=ConfirmView(self.embed, channel),
             ephemeral=True
         )
@@ -141,7 +134,8 @@ class ConfirmView(discord.ui.View):
 
         except discord.Forbidden:
             await interaction.response.send_message(
-                "❌ Ich habe keine Berechtigung, in diesen Kanal zu schreiben.",
+                "❌ Ich darf in diesem Kanal keine Nachrichten senden. "
+                "Bitte prüfe die Kanalrechte.",
                 ephemeral=True
             )
 
