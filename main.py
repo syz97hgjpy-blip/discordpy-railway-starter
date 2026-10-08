@@ -14,343 +14,315 @@ bot = commands.Bot(
 
 
 # =========================================================
-# EMBED STUDIO – HILFSFUNKTIONEN
+# SPRACHBUTTONS AUF DEM FERTIGEN EMBED
 # =========================================================
 
-def format_status(view):
-    german = "✅ Konfiguriert" if view.german_title and view.german_description else "⚪ Nicht konfiguriert"
+class LanguageView(discord.ui.View):
 
-    if view.bilingual:
-        english = "✅ Konfiguriert" if view.english_title and view.english_description else "⚪ Nicht konfiguriert"
-        language = "🟢 Aktiv"
-    else:
-        english = "➖ Deaktiviert"
-        language = "⚪ Nur Deutsch"
+    def __init__(self, german_embed, english_embed):
+        super().__init__(timeout=None)
 
-    return (
-        "## ✦ Embed Studio\n"
-        "Erstelle hier deinen Discord-Embed.\n"
-        "━━━━━━━━━━━━━━━━━━━━\n\n"
-        f"**🇩🇪 Deutsche Version**\n"
-        f"{german}\n\n"
-        f"**🌐 Zweitsprache**\n"
-        f"{language}\n"
-        f"Englische Version: {english}\n\n"
-        f"**🎨 Design**\n"
-        f"`#{view.color_value:06X}`\n"
-        "━━━━━━━━━━━━━━━━━━━━\n"
-        "Konfiguriere die Bereiche über die Buttons unten."
-    )
-
-
-# =========================================================
-# EMBED STUDIO
-# =========================================================
-
-class EmbedStudioView(discord.ui.View):
-
-    def __init__(self):
-        super().__init__(timeout=600)
-
-        self.german_title = None
-        self.german_description = None
-
-        self.english_title = None
-        self.english_description = None
-
-        self.color_value = 0x5865F2
-
-        self.bilingual = False
-
-        self.update_buttons()
-
-    def update_buttons(self):
-
-        # Englisch bearbeiten
-        self.english_button.disabled = not self.bilingual
-
-        # Sprachstatus
-        if self.bilingual:
-            self.language_button.label = "Zweitsprache aktiviert"
-            self.language_button.emoji = "🌐"
-            self.language_button.style = discord.ButtonStyle.success
-        else:
-            self.language_button.label = "Zweitsprache aktivieren"
-            self.language_button.emoji = "🌐"
-            self.language_button.style = discord.ButtonStyle.secondary
-
-        # Veröffentlichungsbutton
-        german_ready = (
-            self.german_title
-            and self.german_description
-        )
-
-        english_ready = (
-            self.english_title
-            and self.english_description
-        )
-
-        if self.bilingual:
-            self.publish_button.disabled = not (
-                german_ready and english_ready
-            )
-        else:
-            self.publish_button.disabled = not german_ready
-
-    # =====================================================
-    # DEUTSCH
-    # =====================================================
+        self.german_embed = german_embed
+        self.english_embed = english_embed
 
     @discord.ui.button(
-        label="Deutsch bearbeiten",
+        label="Deutsch",
         emoji="🇩🇪",
-        style=discord.ButtonStyle.primary,
-        row=0
+        style=discord.ButtonStyle.secondary
     )
     async def german_button(
         self,
         interaction: discord.Interaction,
         button: discord.ui.Button
     ):
-
-        await interaction.response.send_modal(
-            GermanModal(self)
+        await interaction.response.send_message(
+            embed=self.german_embed,
+            ephemeral=True
         )
 
-    # =====================================================
-    # ENGLISCH
-    # =====================================================
-
     @discord.ui.button(
-        label="English bearbeiten",
+        label="English",
         emoji="🇬🇧",
-        style=discord.ButtonStyle.primary,
-        row=0
+        style=discord.ButtonStyle.secondary
     )
     async def english_button(
         self,
         interaction: discord.Interaction,
         button: discord.ui.Button
     ):
-
-        if not self.bilingual:
-            await interaction.response.send_message(
-                "Aktiviere zuerst die Zweitsprache.",
-                ephemeral=True
-            )
-            return
-
-        await interaction.response.send_modal(
-            EnglishModal(self)
+        await interaction.response.send_message(
+            embed=self.english_embed,
+            ephemeral=True
         )
 
-    # =====================================================
-    # ZWEITSPRACHE
-    # =====================================================
+
+# =========================================================
+# EMBED DATEN
+# =========================================================
+
+class EmbedData:
+
+    def __init__(self):
+        self.german_title = ""
+        self.german_description = ""
+
+        self.english_title = ""
+        self.english_description = ""
+
+        self.color = 0x5865F2
+
+        self.bilingual = False
+
+
+# =========================================================
+# HAUPTMENÜ
+# =========================================================
+
+class EmbedMenuView(discord.ui.View):
+
+    def __init__(self, data):
+        super().__init__(timeout=600)
+
+        self.data = data
+
+        self.update_buttons()
+
+    def update_buttons(self):
+
+        # Englisch bearbeiten nur aktiv,
+        # wenn Zweitsprache aktiviert wurde.
+        self.language_edit_button.disabled = not self.data.bilingual
+
+        if self.data.bilingual:
+
+            self.language_toggle_button.label = "Zweitsprache: AN"
+            self.language_toggle_button.style = discord.ButtonStyle.success
+
+        else:
+
+            self.language_toggle_button.label = "Zweitsprache: AUS"
+            self.language_toggle_button.style = discord.ButtonStyle.secondary
+
+    def menu_text(self):
+
+        german_status = (
+            "✅ Ausgefüllt"
+            if self.data.german_title and self.data.german_description
+            else "⚪ Nicht ausgefüllt"
+        )
+
+        english_status = (
+            "✅ Ausgefüllt"
+            if self.data.english_title and self.data.english_description
+            else "⚪ Nicht ausgefüllt"
+        )
+
+        language_status = (
+            "🟢 Aktiv"
+            if self.data.bilingual
+            else "⚪ Deaktiviert"
+        )
+
+        return (
+            "## 📝 Embed erstellen\n\n"
+            "**🇩🇪 Deutsch**\n"
+            f"{german_status}\n\n"
+            "**🇬🇧 Englisch**\n"
+            f"{english_status}\n\n"
+            "**🌐 Zweitsprache**\n"
+            f"{language_status}\n\n"
+            "**🎨 Embed-Farbe**\n"
+            f"`#{self.data.color:06X}`\n\n"
+            "━━━━━━━━━━━━━━━━━━━━\n"
+            "Bearbeite die gewünschten Bereiche über die Buttons."
+        )
+
+    # -----------------------------------------------------
+    # DEUTSCH + FARBE
+    # -----------------------------------------------------
 
     @discord.ui.button(
-        label="Zweitsprache aktivieren",
-        emoji="🌐",
-        style=discord.ButtonStyle.secondary,
-        row=1
+        label="Deutsch & Design bearbeiten",
+        emoji="📝",
+        style=discord.ButtonStyle.primary,
+        row=0
     )
-    async def language_button(
+    async def german_edit_button(
         self,
         interaction: discord.Interaction,
         button: discord.ui.Button
     ):
 
-        self.bilingual = not self.bilingual
+        await interaction.response.send_modal(
+            EmbedContentModal(self.data)
+        )
 
-        if not self.bilingual:
-            self.english_title = None
-            self.english_description = None
+    # -----------------------------------------------------
+    # ZWEITSPRACHE AN / AUS
+    # -----------------------------------------------------
 
+    @discord.ui.button(
+        label="Zweitsprache: AUS",
+        emoji="🌐",
+        style=discord.ButtonStyle.secondary,
+        row=0
+    )
+    async def language_toggle_button(
+        self,
+        interaction: discord.Interaction,
+        button: discord.ui.Button
+    ):
+
+        self.data.bilingual = not self.data.bilingual
+
+        # Wenn deaktiviert, wird die englische Version
+        # nicht gelöscht. Sie bleibt gespeichert und kann
+        # später wieder aktiviert werden.
         self.update_buttons()
 
         await interaction.response.edit_message(
-            content=format_status(self),
+            content=self.menu_text(),
             view=self
         )
 
-    # =====================================================
-    # DESIGN
-    # =====================================================
+    # -----------------------------------------------------
+    # ENGLISCH BEARBEITEN
+    # -----------------------------------------------------
 
     @discord.ui.button(
-        label="Design",
-        emoji="🎨",
-        style=discord.ButtonStyle.secondary,
+        label="English bearbeiten",
+        emoji="🇬🇧",
+        style=discord.ButtonStyle.primary,
         row=1
     )
-    async def design_button(
+    async def language_edit_button(
         self,
         interaction: discord.Interaction,
         button: discord.ui.Button
     ):
 
+        if not self.data.bilingual:
+
+            await interaction.response.send_message(
+                "❌ Aktiviere zuerst **Zweitsprache**, "
+                "bevor du Englisch bearbeiten kannst.",
+                ephemeral=True
+            )
+
+            return
+
         await interaction.response.send_modal(
-            DesignModal(self)
+            EnglishModal(self.data)
         )
 
-    # =====================================================
-    # VERÖFFENTLICHEN
-    # =====================================================
+    # -----------------------------------------------------
+    # EMBED VORSCHAU / KANAL
+    # -----------------------------------------------------
 
     @discord.ui.button(
-        label="Veröffentlichen",
-        emoji="🚀",
+        label="Weiter",
+        emoji="➡️",
         style=discord.ButtonStyle.success,
         row=2
     )
-    async def publish_button(
+    async def continue_button(
         self,
         interaction: discord.Interaction,
         button: discord.ui.Button
     ):
 
-        self.update_buttons()
+        if not self.data.german_title or not self.data.german_description:
 
-        if button.disabled:
             await interaction.response.send_message(
-                "❌ Der Embed ist noch nicht vollständig konfiguriert.",
+                "❌ Bitte fülle zuerst die deutsche Version aus.",
                 ephemeral=True
             )
+
             return
 
+        if self.data.bilingual:
+
+            if (
+                not self.data.english_title
+                or not self.data.english_description
+            ):
+
+                await interaction.response.send_message(
+                    "❌ Du hast die Zweitsprache aktiviert. "
+                    "Bitte fülle deshalb auch die englische Version aus.",
+                    ephemeral=True
+                )
+
+                return
+
         german_embed = discord.Embed(
-            title=self.german_title,
-            description=self.german_description,
-            color=discord.Color(self.color_value)
+            title=self.data.german_title,
+            description=self.data.german_description,
+            color=discord.Color(self.data.color)
         )
 
         english_embed = None
 
-        if self.bilingual:
+        if self.data.bilingual:
 
             english_embed = discord.Embed(
-                title=self.english_title,
-                description=self.english_description,
-                color=discord.Color(self.color_value)
+                title=self.data.english_title,
+                description=self.data.english_description,
+                color=discord.Color(self.data.color)
             )
 
         await interaction.response.edit_message(
             content=(
-                "## 📢 Veröffentlichung\n\n"
-                "Wähle jetzt den Kanal aus, in dem dein Embed "
+                "## 📢 Kanal auswählen\n\n"
+                "Wähle den Textkanal aus, in dem der Embed "
                 "veröffentlicht werden soll."
             ),
             view=ChannelSelectView(
                 german_embed,
                 english_embed,
-                self.bilingual
+                self.data.bilingual
             )
         )
 
 
 # =========================================================
-# DEUTSCHES MODAL
+# DEUTSCH + DESIGN MODAL
 # =========================================================
 
-class GermanModal(discord.ui.Modal):
+class EmbedContentModal(discord.ui.Modal):
 
-    def __init__(self, studio):
-        super().__init__(title="Deutsche Version")
+    def __init__(self, data):
+        super().__init__(title="Embed bearbeiten")
 
-        self.studio = studio
+        self.data = data
 
-        self.title_input = discord.ui.TextInput(
-            label="Titel",
+        self.german_title = discord.ui.TextInput(
+            label="Deutscher Titel",
             placeholder="z. B. SERVER REGELN",
+            default=data.german_title or None,
             required=True,
             max_length=256
         )
 
-        self.description_input = discord.ui.TextInput(
-            label="Nachricht",
-            placeholder="Schreibe hier deinen deutschen Inhalt...",
+        self.german_description = discord.ui.TextInput(
+            label="Deutsche Nachricht",
+            placeholder="Dein deutscher Inhalt...",
+            default=data.german_description or None,
             style=discord.TextStyle.paragraph,
             required=True,
             max_length=4000
         )
-
-        self.add_item(self.title_input)
-        self.add_item(self.description_input)
-
-    async def on_submit(self, interaction):
-
-        self.studio.german_title = self.title_input.value
-        self.studio.german_description = self.description_input.value
-
-        self.studio.update_buttons()
-
-        await interaction.response.edit_message(
-            content=format_status(self.studio),
-            view=self.studio
-        )
-
-
-# =========================================================
-# ENGLISCHES MODAL
-# =========================================================
-
-class EnglishModal(discord.ui.Modal):
-
-    def __init__(self, studio):
-        super().__init__(title="English Version")
-
-        self.studio = studio
-
-        self.title_input = discord.ui.TextInput(
-            label="Title",
-            placeholder="e.g. SERVER RULES",
-            required=True,
-            max_length=256
-        )
-
-        self.description_input = discord.ui.TextInput(
-            label="Message",
-            placeholder="Write your English content here...",
-            style=discord.TextStyle.paragraph,
-            required=True,
-            max_length=4000
-        )
-
-        self.add_item(self.title_input)
-        self.add_item(self.description_input)
-
-    async def on_submit(self, interaction):
-
-        self.studio.english_title = self.title_input.value
-        self.studio.english_description = self.description_input.value
-
-        self.studio.update_buttons()
-
-        await interaction.response.edit_message(
-            content=format_status(self.studio),
-            view=self.studio
-        )
-
-
-# =========================================================
-# DESIGN MODAL
-# =========================================================
-
-class DesignModal(discord.ui.Modal):
-
-    def __init__(self, studio):
-        super().__init__(title="Embed Design")
-
-        self.studio = studio
 
         self.color_input = discord.ui.TextInput(
-            label="Embed-Farbe",
+            label="Hex-Farbe",
             placeholder="#5865F2",
-            default=f"#{studio.color_value:06X}",
+            default=f"#{data.color:06X}",
             required=True,
             max_length=7
         )
 
+        self.add_item(self.german_title)
+        self.add_item(self.german_description)
         self.add_item(self.color_input)
 
     async def on_submit(self, interaction):
@@ -374,20 +346,65 @@ class DesignModal(discord.ui.Modal):
                 "Beispiel: `#5865F2`",
                 ephemeral=True
             )
+
             return
 
-        self.studio.color_value = color_value
-
-        self.studio.update_buttons()
+        self.data.german_title = self.german_title.value
+        self.data.german_description = self.german_description.value
+        self.data.color = color_value
 
         await interaction.response.edit_message(
-            content=format_status(self.studio),
-            view=self.studio
+            content=EmbedMenuView(self.data).menu_text(),
+            view=EmbedMenuView(self.data)
         )
 
 
 # =========================================================
-# KANALAUSWAHL
+# ENGLISCH MODAL
+# =========================================================
+
+class EnglishModal(discord.ui.Modal):
+
+    def __init__(self, data):
+        super().__init__(title="Englische Version")
+
+        self.data = data
+
+        self.english_title = discord.ui.TextInput(
+            label="Englischer Titel",
+            placeholder="z. B. SERVER RULES",
+            default=data.english_title or None,
+            required=True,
+            max_length=256
+        )
+
+        self.english_description = discord.ui.TextInput(
+            label="Englische Nachricht",
+            placeholder="Your English content...",
+            default=data.english_description or None,
+            style=discord.TextStyle.paragraph,
+            required=True,
+            max_length=4000
+        )
+
+        self.add_item(self.english_title)
+        self.add_item(self.english_description)
+
+    async def on_submit(self, interaction):
+
+        self.data.english_title = self.english_title.value
+        self.data.english_description = self.english_description.value
+
+        view = EmbedMenuView(self.data)
+
+        await interaction.response.edit_message(
+            content=view.menu_text(),
+            view=view
+        )
+
+
+# =========================================================
+# KANAL AUSWÄHLEN
 # =========================================================
 
 class ChannelSelectView(discord.ui.View):
@@ -433,9 +450,10 @@ class ChannelSelectView(discord.ui.View):
             except discord.NotFound:
 
                 await interaction.response.send_message(
-                    "❌ Der ausgewählte Kanal wurde nicht gefunden.",
+                    "❌ Der Kanal wurde nicht gefunden.",
                     ephemeral=True
                 )
+
                 return
 
             except discord.Forbidden:
@@ -444,6 +462,7 @@ class ChannelSelectView(discord.ui.View):
                     "❌ Ich kann diesen Kanal nicht abrufen.",
                     ephemeral=True
                 )
+
                 return
 
         if not isinstance(channel, discord.TextChannel):
@@ -452,16 +471,16 @@ class ChannelSelectView(discord.ui.View):
                 "❌ Bitte wähle einen normalen Textkanal.",
                 ephemeral=True
             )
+
             return
 
         await interaction.response.edit_message(
             content=(
-                "## ✦ Veröffentlichung vorbereiten\n\n"
-                f"**Zielkanal:** {channel.mention}\n\n"
-                "Überprüfe deine Auswahl und veröffentliche "
-                "den Embed anschließend."
+                "## 📤 Embed veröffentlichen\n\n"
+                f"**Ziel:** {channel.mention}\n\n"
+                "Drücke den Button unten, um den Embed zu senden."
             ),
-            view=PublishConfirmView(
+            view=ConfirmView(
                 self.german_embed,
                 self.english_embed,
                 self.bilingual,
@@ -471,10 +490,10 @@ class ChannelSelectView(discord.ui.View):
 
 
 # =========================================================
-# VERÖFFENTLICHUNG BESTÄTIGEN
+# BESTÄTIGUNG
 # =========================================================
 
-class PublishConfirmView(discord.ui.View):
+class ConfirmView(discord.ui.View):
 
     def __init__(
         self,
@@ -491,11 +510,11 @@ class PublishConfirmView(discord.ui.View):
         self.channel = channel
 
     @discord.ui.button(
-        label="Embed veröffentlichen",
+        label="Embed senden",
         emoji="🚀",
         style=discord.ButtonStyle.success
     )
-    async def publish(
+    async def send_embed(
         self,
         interaction: discord.Interaction,
         button: discord.ui.Button
@@ -523,9 +542,8 @@ class PublishConfirmView(discord.ui.View):
 
             await interaction.response.edit_message(
                 content=(
-                    "## ✅ Erfolgreich veröffentlicht\n\n"
-                    f"Der Embed wurde in {self.channel.mention} "
-                    "veröffentlicht."
+                    f"✅ Embed wurde erfolgreich in "
+                    f"{self.channel.mention} veröffentlicht."
                 ),
                 view=self
             )
@@ -533,9 +551,9 @@ class PublishConfirmView(discord.ui.View):
         except discord.Forbidden:
 
             await interaction.response.send_message(
-                "❌ Ich habe in diesem Kanal nicht die nötigen "
-                "Berechtigungen.\n\n"
-                "Benötigt werden:\n"
+                "❌ Der Bot hat in diesem Kanal nicht die "
+                "benötigten Berechtigungen.\n\n"
+                "Benötigt:\n"
                 "• Kanal ansehen\n"
                 "• Nachrichten senden\n"
                 "• Links einbetten",
@@ -555,55 +573,6 @@ class PublishConfirmView(discord.ui.View):
                 f"❌ Unerwarteter Fehler:\n`{error}`",
                 ephemeral=True
             )
-
-
-# =========================================================
-# SPRACHBUTTONS AUF DEM ÖFFENTLICHEN EMBED
-# =========================================================
-
-class LanguageView(discord.ui.View):
-
-    def __init__(
-        self,
-        german_embed,
-        english_embed
-    ):
-        super().__init__(timeout=None)
-
-        self.german_embed = german_embed
-        self.english_embed = english_embed
-
-    @discord.ui.button(
-        label="Deutsch",
-        emoji="🇩🇪",
-        style=discord.ButtonStyle.secondary
-    )
-    async def german(
-        self,
-        interaction: discord.Interaction,
-        button: discord.ui.Button
-    ):
-
-        await interaction.response.send_message(
-            embed=self.german_embed,
-            ephemeral=True
-        )
-
-    @discord.ui.button(
-        label="English",
-        emoji="🇬🇧",
-        style=discord.ButtonStyle.secondary
-    )
-    async def english(
-        self,
-        interaction: discord.Interaction,
-        button: discord.ui.Button
-    ):
-
-        await interaction.response.send_message(
-            embed=self.english_embed,
-            ephemeral=True
-        )
 
 
 # =========================================================
@@ -636,17 +605,19 @@ async def on_ready():
 
 @bot.tree.command(
     name="embed",
-    description="Öffnet das Embed Studio"
+    description="Erstellt einen Discord Embed"
 )
 async def embed_command(
     interaction: discord.Interaction
 ):
 
-    studio = EmbedStudioView()
+    data = EmbedData()
+
+    view = EmbedMenuView(data)
 
     await interaction.response.send_message(
-        content=format_status(studio),
-        view=studio,
+        content=view.menu_text(),
+        view=view,
         ephemeral=True
     )
 
