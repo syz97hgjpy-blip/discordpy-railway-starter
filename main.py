@@ -12,6 +12,10 @@ bot = commands.Bot(
 )
 
 
+# =========================================================
+# EMBED MODAL
+# =========================================================
+
 class EmbedModal(discord.ui.Modal, title="Embed erstellen"):
 
     embed_title = discord.ui.TextInput(
@@ -39,33 +43,44 @@ class EmbedModal(discord.ui.Modal, title="Embed erstellen"):
 
     async def on_submit(self, interaction: discord.Interaction):
 
-        color_text = self.embed_color.value.strip().replace("#", "")
+        # Hex-Farbe prüfen
+        color_text = self.embed_color.value.strip()
+
+        if color_text.startswith("#"):
+            color_text = color_text[1:]
 
         try:
             if len(color_text) != 6:
                 raise ValueError
 
-            color = int(color_text, 16)
+            color_value = int(color_text, 16)
 
         except ValueError:
             await interaction.response.send_message(
-                "❌ Ungültige Hex-Farbe. Beispiel: `#5865F2`",
+                "❌ Ungültige Hex-Farbe.\n"
+                "Beispiel: `#5865F2`",
                 ephemeral=True
             )
             return
 
+        # Embed erstellen
         embed = discord.Embed(
             title=self.embed_title.value,
             description=self.embed_description.value,
-            color=discord.Color(color)
+            color=discord.Color(color_value)
         )
 
+        # Kanal-Auswahl anzeigen
         await interaction.response.send_message(
             "📢 **Wähle den Kanal aus, in dem der Embed gesendet werden soll:**",
             view=ChannelSelectView(embed),
             ephemeral=True
         )
 
+
+# =========================================================
+# CHANNEL SELECT
+# =========================================================
 
 class ChannelSelectView(discord.ui.View):
 
@@ -86,20 +101,57 @@ class ChannelSelectView(discord.ui.View):
         select: discord.ui.ChannelSelect
     ):
 
-        channel = select.values[0]
+        # Discord liefert hier ein AppCommandChannel.
+        # Wir nehmen deshalb nur die ID und holen den echten Kanal.
+        selected_channel = select.values[0]
+        channel_id = selected_channel.id
 
+        channel = interaction.guild.get_channel(channel_id)
+
+        # Falls der Kanal nicht im Cache ist:
+        if channel is None:
+            try:
+                channel = await interaction.client.fetch_channel(channel_id)
+            except discord.NotFound:
+                await interaction.response.send_message(
+                    "❌ Der ausgewählte Kanal wurde nicht gefunden.",
+                    ephemeral=True
+                )
+                return
+
+            except discord.Forbidden:
+                await interaction.response.send_message(
+                    "❌ Ich darf diesen Kanal nicht abrufen.",
+                    ephemeral=True
+                )
+                return
+
+        # Nur Textkanäle erlauben
+        if not isinstance(channel, discord.TextChannel):
+            await interaction.response.send_message(
+                "❌ Bitte wähle einen normalen Textkanal.",
+                ephemeral=True
+            )
+            return
+
+        # Bestätigung anzeigen
         await interaction.response.send_message(
-            f"✅ Kanal ausgewählt: {channel.mention}\n"
-            f"Drücke **Embed senden**, um den Embed zu posten.",
+            f"✅ **Kanal ausgewählt:** {channel.mention}\n\n"
+            "Drücke **Embed senden**, um den Embed dort zu posten.",
             view=ConfirmView(self.embed, channel),
             ephemeral=True
         )
 
 
+# =========================================================
+# CONFIRM BUTTON
+# =========================================================
+
 class ConfirmView(discord.ui.View):
 
     def __init__(self, embed, channel):
         super().__init__(timeout=300)
+
         self.embed = embed
         self.channel = channel
 
@@ -115,26 +167,49 @@ class ConfirmView(discord.ui.View):
     ):
 
         try:
+
+            # Embed im ausgewählten Kanal senden
             await self.channel.send(embed=self.embed)
 
             await interaction.response.send_message(
-                f"✅ Embed wurde in {self.channel.mention} gesendet!",
+                f"✅ **Embed wurde erfolgreich in "
+                f"{self.channel.mention} gesendet!**",
                 ephemeral=True
             )
 
+            # Button deaktivieren
+            button.disabled = True
+
         except discord.Forbidden:
+
             await interaction.response.send_message(
-                "❌ Ich darf in diesem Kanal keine Nachrichten senden. "
-                "Bitte prüfe die Kanalrechte.",
+                "❌ **Keine Berechtigung.**\n\n"
+                "Der Bot braucht in diesem Kanal mindestens:\n"
+                "• Kanal ansehen\n"
+                "• Nachrichten senden\n"
+                "• Links einbetten",
+                ephemeral=True
+            )
+
+        except discord.NotFound:
+
+            await interaction.response.send_message(
+                "❌ Dieser Kanal existiert nicht mehr.",
                 ephemeral=True
             )
 
         except Exception as error:
+
             await interaction.response.send_message(
-                f"❌ Fehler: `{error}`",
+                f"❌ Unerwarteter Fehler:\n"
+                f"`{error}`",
                 ephemeral=True
             )
 
+
+# =========================================================
+# BOT START
+# =========================================================
 
 @bot.event
 async def on_ready():
@@ -143,22 +218,43 @@ async def on_ready():
 
     try:
         synced = await bot.tree.sync()
-        print(f"{len(synced)} Slash Commands synchronisiert.")
+
+        print(
+            f"{len(synced)} Slash Commands synchronisiert."
+        )
 
     except Exception as error:
-        print(f"Fehler beim Synchronisieren: {error}")
 
+        print(
+            f"Fehler beim Synchronisieren: {error}"
+        )
+
+
+# =========================================================
+# /EMBED COMMAND
+# =========================================================
 
 @bot.tree.command(
     name="embed",
     description="Erstellt einen Discord Embed"
 )
-async def embed_command(interaction: discord.Interaction):
+async def embed_command(
+    interaction: discord.Interaction
+):
 
-    await interaction.response.send_modal(EmbedModal())
+    await interaction.response.send_modal(
+        EmbedModal()
+    )
 
+
+# =========================================================
+# TOKEN
+# =========================================================
 
 if not TOKEN:
-    raise RuntimeError("DISCORD_TOKEN wurde nicht gefunden.")
+    raise RuntimeError(
+        "DISCORD_TOKEN wurde nicht gefunden."
+    )
+
 
 bot.run(TOKEN)
