@@ -1,6 +1,5 @@
 import os
 import discord
-from discord import app_commands
 from discord.ext import commands
 
 TOKEN = os.getenv("DISCORD_TOKEN")
@@ -88,15 +87,6 @@ class ChannelSelectView(discord.ui.View):
     ):
 
         channel = select.values[0]
-
-        # Discord kann hier verschiedene Channel-Typen liefern.
-        # Wir prüfen deshalb nur, ob der Kanal Nachrichten senden kann.
-        if not hasattr(channel, "send"):
-            await interaction.response.send_message(
-                "❌ Dieser Kanal kann keine Nachrichten empfangen.",
-                ephemeral=True
-            )
-            return
 
         await interaction.response.send_message(
             f"✅ Kanal ausgewählt: {channel.mention}\n"
