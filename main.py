@@ -14,6 +14,13 @@ bot = commands.Bot(
 
 
 # =========================================================
+# DEIN RAINBOW SERVER-EMOJI
+# =========================================================
+
+RAINBOW_EMOJI = "<:rainbow:1557860496281968692>"
+
+
+# =========================================================
 # SPRACHBUTTONS AUF DEM FERTIGEN EMBED
 # =========================================================
 
@@ -87,63 +94,43 @@ class EmbedMenuView(discord.ui.View):
 
         self.update_buttons()
 
+    def menu_text(self):
+
+        return (
+            "## 📝 Embed erstellen\n\n"
+            f"{RAINBOW_EMOJI} **Embed-Farbe**\n"
+            f"`#{self.data.color:06X}`\n\n"
+            "━━━━━━━━━━━━━━━━━━━━\n"
+            "Bearbeite deinen Embed über die Buttons unten."
+        )
+
     def update_buttons(self):
 
-        # Englisch bearbeiten nur aktiv,
-        # wenn Zweitsprache aktiviert wurde.
+        # Englisch bearbeiten ist nur verfügbar,
+        # wenn die Zweitsprache aktiviert wurde.
         self.language_edit_button.disabled = not self.data.bilingual
 
         if self.data.bilingual:
 
             self.language_toggle_button.label = "Zweitsprache: AN"
-            self.language_toggle_button.style = discord.ButtonStyle.success
+            self.language_toggle_button.style = (
+                discord.ButtonStyle.success
+            )
 
         else:
 
             self.language_toggle_button.label = "Zweitsprache: AUS"
-            self.language_toggle_button.style = discord.ButtonStyle.secondary
+            self.language_toggle_button.style = (
+                discord.ButtonStyle.secondary
+            )
 
-    def menu_text(self):
-
-        german_status = (
-            "✅ Ausgefüllt"
-            if self.data.german_title and self.data.german_description
-            else "⚪ Nicht ausgefüllt"
-        )
-
-        english_status = (
-            "✅ Ausgefüllt"
-            if self.data.english_title and self.data.english_description
-            else "⚪ Nicht ausgefüllt"
-        )
-
-        language_status = (
-            "🟢 Aktiv"
-            if self.data.bilingual
-            else "⚪ Deaktiviert"
-        )
-
-        return (
-            "## 📝 Embed erstellen\n\n"
-            "**🇩🇪 Deutsch**\n"
-            f"{german_status}\n\n"
-            "**🇬🇧 Englisch**\n"
-            f"{english_status}\n\n"
-            "**🌐 Zweitsprache**\n"
-            f"{language_status}\n\n"
-            "**🎨 Embed-Farbe**\n"
-            f"`#{self.data.color:06X}`\n\n"
-            "━━━━━━━━━━━━━━━━━━━━\n"
-            "Bearbeite die gewünschten Bereiche über die Buttons."
-        )
-
-    # -----------------------------------------------------
+    # =====================================================
     # DEUTSCH + FARBE
-    # -----------------------------------------------------
+    # =====================================================
 
     @discord.ui.button(
-        label="Deutsch & Design bearbeiten",
-        emoji="📝",
+        label="Deutsch bearbeiten",
+        emoji="🇩🇪",
         style=discord.ButtonStyle.primary,
         row=0
     )
@@ -157,9 +144,9 @@ class EmbedMenuView(discord.ui.View):
             EmbedContentModal(self.data)
         )
 
-    # -----------------------------------------------------
+    # =====================================================
     # ZWEITSPRACHE AN / AUS
-    # -----------------------------------------------------
+    # =====================================================
 
     @discord.ui.button(
         label="Zweitsprache: AUS",
@@ -175,9 +162,6 @@ class EmbedMenuView(discord.ui.View):
 
         self.data.bilingual = not self.data.bilingual
 
-        # Wenn deaktiviert, wird die englische Version
-        # nicht gelöscht. Sie bleibt gespeichert und kann
-        # später wieder aktiviert werden.
         self.update_buttons()
 
         await interaction.response.edit_message(
@@ -185,9 +169,9 @@ class EmbedMenuView(discord.ui.View):
             view=self
         )
 
-    # -----------------------------------------------------
+    # =====================================================
     # ENGLISCH BEARBEITEN
-    # -----------------------------------------------------
+    # =====================================================
 
     @discord.ui.button(
         label="English bearbeiten",
@@ -215,9 +199,9 @@ class EmbedMenuView(discord.ui.View):
             EnglishModal(self.data)
         )
 
-    # -----------------------------------------------------
-    # EMBED VORSCHAU / KANAL
-    # -----------------------------------------------------
+    # =====================================================
+    # WEITER
+    # =====================================================
 
     @discord.ui.button(
         label="Weiter",
@@ -231,7 +215,10 @@ class EmbedMenuView(discord.ui.View):
         button: discord.ui.Button
     ):
 
-        if not self.data.german_title or not self.data.german_description:
+        if (
+            not self.data.german_title
+            or not self.data.german_description
+        ):
 
             await interaction.response.send_message(
                 "❌ Bitte fülle zuerst die deutsche Version aus.",
@@ -249,7 +236,7 @@ class EmbedMenuView(discord.ui.View):
 
                 await interaction.response.send_message(
                     "❌ Du hast die Zweitsprache aktiviert. "
-                    "Bitte fülle deshalb auch die englische Version aus.",
+                    "Bitte fülle auch die englische Version aus.",
                     ephemeral=True
                 )
 
@@ -286,7 +273,7 @@ class EmbedMenuView(discord.ui.View):
 
 
 # =========================================================
-# DEUTSCH + DESIGN MODAL
+# DEUTSCH + FARBE
 # =========================================================
 
 class EmbedContentModal(discord.ui.Modal):
@@ -353,14 +340,16 @@ class EmbedContentModal(discord.ui.Modal):
         self.data.german_description = self.german_description.value
         self.data.color = color_value
 
+        view = EmbedMenuView(self.data)
+
         await interaction.response.edit_message(
-            content=EmbedMenuView(self.data).menu_text(),
-            view=EmbedMenuView(self.data)
+            content=view.menu_text(),
+            view=view
         )
 
 
 # =========================================================
-# ENGLISCH MODAL
+# ENGLISCH
 # =========================================================
 
 class EnglishModal(discord.ui.Modal):
