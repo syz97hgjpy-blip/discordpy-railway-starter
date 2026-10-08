@@ -13,26 +13,95 @@ bot = commands.Bot(
 
 
 # =========================================================
-# EMBED MODAL
+# PERSÖNLICHE SPRACHANZEIGE
+# =========================================================
+
+class LanguageView(discord.ui.View):
+
+    def __init__(self, german_embed, english_embed):
+        super().__init__(timeout=None)
+
+        self.german_embed = german_embed
+        self.english_embed = english_embed
+
+    @discord.ui.button(
+        label="Deutsch",
+        emoji="🇩🇪",
+        style=discord.ButtonStyle.success,
+        custom_id="language_german"
+    )
+    async def german(
+        self,
+        interaction: discord.Interaction,
+        button: discord.ui.Button
+    ):
+        # Persönliche deutsche Version.
+        # Nur die Person, die geklickt hat, sieht sie.
+        await interaction.response.send_message(
+            embed=self.german_embed,
+            ephemeral=True
+        )
+
+    @discord.ui.button(
+        label="English",
+        emoji="🇬🇧",
+        style=discord.ButtonStyle.success,
+        custom_id="language_english"
+    )
+    async def english(
+        self,
+        interaction: discord.Interaction,
+        button: discord.ui.Button
+    ):
+        # Persönliche englische Version.
+        # Nur die Person, die geklickt hat, sieht sie.
+        await interaction.response.send_message(
+            embed=self.english_embed,
+            ephemeral=True
+        )
+
+
+# =========================================================
+# EMBED ERSTELLEN
 # =========================================================
 
 class EmbedModal(discord.ui.Modal, title="Embed erstellen"):
 
+    # DEUTSCHER TITEL
     embed_title = discord.ui.TextInput(
-        label="Titel",
-        placeholder="z. B. SERVER RULES",
+        label="Deutscher Titel",
+        placeholder="z. B. SERVER REGELN",
         required=True,
         max_length=256
     )
 
+    # DEUTSCHE NACHRICHT
     embed_description = discord.ui.TextInput(
-        label="Nachricht",
-        placeholder="Deine Nachricht...",
+        label="Deutsche Nachricht",
+        placeholder="Dein deutsches Regelwerk...",
         style=discord.TextStyle.paragraph,
         required=True,
         max_length=4000
     )
 
+    # ENGLISCHER TITEL
+    english_title = discord.ui.TextInput(
+        label="Englischer Titel",
+        placeholder="z. B. SERVER RULES",
+        required=True,
+        max_length=256
+    )
+
+    # ENGLISCHE NACHRICHT
+    english_description = discord.ui.TextInput(
+        label="Englische Nachricht",
+        placeholder="Your English rules...",
+        style=discord.TextStyle.paragraph,
+        required=True,
+        max_length=4000
+    )
+
+    # FARBE
     embed_color = discord.ui.TextInput(
         label="Hex-Farbe",
         placeholder="#5865F2",
@@ -43,7 +112,10 @@ class EmbedModal(discord.ui.Modal, title="Embed erstellen"):
 
     async def on_submit(self, interaction: discord.Interaction):
 
-        # Hex-Farbe prüfen
+        # =================================================
+        # HEX-FARBE
+        # =================================================
+
         color_text = self.embed_color.value.strip()
 
         if color_text.startswith("#"):
@@ -63,30 +135,52 @@ class EmbedModal(discord.ui.Modal, title="Embed erstellen"):
             )
             return
 
-        # Embed erstellen
-        embed = discord.Embed(
+        # =================================================
+        # DEUTSCHES EMBED
+        # =================================================
+
+        german_embed = discord.Embed(
             title=self.embed_title.value,
             description=self.embed_description.value,
             color=discord.Color(color_value)
         )
 
-        # Kanal-Auswahl anzeigen
+        # =================================================
+        # ENGLISCHES EMBED
+        # =================================================
+
+        english_embed = discord.Embed(
+            title=self.english_title.value,
+            description=self.english_description.value,
+            color=discord.Color(color_value)
+        )
+
+        # =================================================
+        # KANAL AUSWÄHLEN
+        # =================================================
+
         await interaction.response.send_message(
-            "📢 **Wähle den Kanal aus, in dem der Embed gesendet werden soll:**",
-            view=ChannelSelectView(embed),
+            "📢 **Wähle den Kanal aus, in dem der Embed "
+            "gesendet werden soll:**",
+            view=ChannelSelectView(
+                german_embed,
+                english_embed
+            ),
             ephemeral=True
         )
 
 
 # =========================================================
-# CHANNEL SELECT
+# KANAL AUSWÄHLEN
 # =========================================================
 
 class ChannelSelectView(discord.ui.View):
 
-    def __init__(self, embed):
+    def __init__(self, german_embed, english_embed):
         super().__init__(timeout=300)
-        self.embed = embed
+
+        self.german_embed = german_embed
+        self.english_embed = english_embed
 
     @discord.ui.select(
         cls=discord.ui.ChannelSelect,
@@ -101,17 +195,20 @@ class ChannelSelectView(discord.ui.View):
         select: discord.ui.ChannelSelect
     ):
 
-        # Discord liefert hier ein AppCommandChannel.
-        # Wir nehmen deshalb nur die ID und holen den echten Kanal.
         selected_channel = select.values[0]
+
+        # Nur die ID verwenden
         channel_id = selected_channel.id
 
+        # Echten Kanal aus Discord holen
         channel = interaction.guild.get_channel(channel_id)
 
-        # Falls der Kanal nicht im Cache ist:
         if channel is None:
             try:
-                channel = await interaction.client.fetch_channel(channel_id)
+                channel = await interaction.client.fetch_channel(
+                    channel_id
+                )
+
             except discord.NotFound:
                 await interaction.response.send_message(
                     "❌ Der ausgewählte Kanal wurde nicht gefunden.",
@@ -126,7 +223,7 @@ class ChannelSelectView(discord.ui.View):
                 )
                 return
 
-        # Nur Textkanäle erlauben
+        # Prüfen, ob es ein normaler Textkanal ist
         if not isinstance(channel, discord.TextChannel):
             await interaction.response.send_message(
                 "❌ Bitte wähle einen normalen Textkanal.",
@@ -134,25 +231,35 @@ class ChannelSelectView(discord.ui.View):
             )
             return
 
-        # Bestätigung anzeigen
+        # Bestätigung
         await interaction.response.send_message(
             f"✅ **Kanal ausgewählt:** {channel.mention}\n\n"
-            "Drücke **Embed senden**, um den Embed dort zu posten.",
-            view=ConfirmView(self.embed, channel),
+            "Drücke **Embed senden**, um das Regelwerk zu posten.",
+            view=ConfirmView(
+                german_embed=self.german_embed,
+                english_embed=self.english_embed,
+                channel=channel
+            ),
             ephemeral=True
         )
 
 
 # =========================================================
-# CONFIRM BUTTON
+# EMBED SENDEN
 # =========================================================
 
 class ConfirmView(discord.ui.View):
 
-    def __init__(self, embed, channel):
+    def __init__(
+        self,
+        german_embed,
+        english_embed,
+        channel
+    ):
         super().__init__(timeout=300)
 
-        self.embed = embed
+        self.german_embed = german_embed
+        self.english_embed = english_embed
         self.channel = channel
 
     @discord.ui.button(
@@ -168,8 +275,17 @@ class ConfirmView(discord.ui.View):
 
         try:
 
-            # Embed im ausgewählten Kanal senden
-            await self.channel.send(embed=self.embed)
+            # =================================================
+            # DEUTSCH IST DIE FESTE STANDARDVERSION
+            # =================================================
+
+            await self.channel.send(
+                embed=self.german_embed,
+                view=LanguageView(
+                    self.german_embed,
+                    self.english_embed
+                )
+            )
 
             await interaction.response.send_message(
                 f"✅ **Embed wurde erfolgreich in "
@@ -177,14 +293,13 @@ class ConfirmView(discord.ui.View):
                 ephemeral=True
             )
 
-            # Button deaktivieren
             button.disabled = True
 
         except discord.Forbidden:
 
             await interaction.response.send_message(
                 "❌ **Keine Berechtigung.**\n\n"
-                "Der Bot braucht in diesem Kanal mindestens:\n"
+                "Der Bot braucht in diesem Kanal:\n"
                 "• Kanal ansehen\n"
                 "• Nachrichten senden\n"
                 "• Links einbetten",
@@ -208,7 +323,7 @@ class ConfirmView(discord.ui.View):
 
 
 # =========================================================
-# BOT START
+# BOT IST ONLINE
 # =========================================================
 
 @bot.event
@@ -231,7 +346,7 @@ async def on_ready():
 
 
 # =========================================================
-# /EMBED COMMAND
+# /EMBED
 # =========================================================
 
 @bot.tree.command(
@@ -255,6 +370,5 @@ if not TOKEN:
     raise RuntimeError(
         "DISCORD_TOKEN wurde nicht gefunden."
     )
-
 
 bot.run(TOKEN)
