@@ -26,8 +26,6 @@ JOIN_WINDOW_SECONDS = 20
 JOIN_SPIKE_LIMIT = 8
 JOIN_TIMES = deque()
 
-# Optional: true = neu beitretende Bot-Accounts werden entfernt.
-# Nur aktivieren, wenn du wirklich KEINE neuen Bots zulassen willst.
 BLOCK_NEW_BOTS = os.getenv("BLOCK_NEW_BOTS", "false").lower() == "true"
 
 logging.basicConfig(level=logging.INFO)
@@ -47,7 +45,17 @@ intents.moderation = True
 intents.webhooks = True
 intents.message_content = True
 
-bot = commands.Bot(command_prefix="!", intents=intents)
+
+class SecurityBot(commands.Bot):
+    async def setup_hook(self):
+        # Persistent View: Verifizierungsbutton bleibt nach Neustarts aktiv.
+        self.add_view(VerifyPanel())
+
+        synced = await self.tree.sync()
+        log.info("%s Slash-Befehle synchronisiert.", len(synced))
+
+
+bot = SecurityBot(command_prefix="!", intents=intents)
 
 # ============================================================
 # PERSISTENTE KONFIGURATION
@@ -80,6 +88,29 @@ def set_verification_roles(guild_id, role_ids):
     save_config(config)
 
 
+def get_configured_roles(guild):
+    """Gibt die eingerichteten Rollen zurück, die noch existieren."""
+    role_ids = get_guild_config(guild.id).get("verification_role_ids", [])
+    roles = []
+
+    for role_id in role_ids:
+        try:
+            role = guild.get_role(int(role_id))
+        except (TypeError, ValueError):
+            continue
+
+        if role is not None:
+            roles.append(role)
+
+    return roles
+
+
+def is_already_verified(member):
+    """Als verifiziert gilt ein Mitglied, wenn es alle eingerichteten Rollen hat."""
+    roles = get_configured_roles(member.guild)
+    return bool(roles) and all(role in member.roles for role in roles)
+
+
 # ============================================================
 # SICHERHEITSLOGS
 # ============================================================
@@ -94,7 +125,11 @@ async def security_log(title, description, color=discord.Color.orange()):
     if channel is None:
         try:
             channel = await bot.fetch_channel(SECURITY_LOG_CHANNEL_ID)
-        except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+        except (
+            discord.NotFound,
+            discord.Forbidden,
+            discord.HTTPException,
+        ):
             log.warning("Sicherheits-Log-Kanal nicht erreichbar.")
             return
 
@@ -135,7 +170,6 @@ def generate_captcha():
     image = Image.new("RGB", (width, height), (12, 12, 12))
     draw = ImageDraw.Draw(image)
 
-    # Dezente Linien als Störung
     for _ in range(12):
         x1 = random.randint(0, width)
         y1 = random.randint(0, height)
@@ -144,7 +178,6 @@ def generate_captcha():
         shade = random.randint(35, 65)
         draw.line((x1, y1, x2, y2), fill=(shade, shade, shade), width=1)
 
-    # Dezente Punkte
     for _ in range(150):
         x = random.randint(0, width - 1)
         y = random.randint(0, height - 1)
@@ -156,12 +189,12 @@ def generate_captcha():
     except OSError:
         try:
             font = ImageFont.truetype(
-                "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 52
+                "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+                52,
             )
         except OSError:
             font = ImageFont.load_default()
 
-    # Zeichen mit kleinen Abständen zeichnen
     char_widths = [
         draw.textbbox((0, 0), char, font=font)[2]
         for char in answer
@@ -215,7 +248,10 @@ class CaptchaAnswerSelect(discord.ui.Select):
 
             while len(options) < 4:
                 candidate = "".join(
-                    random.choices(string.ascii_uppercase + string.digits, k=6)
+                    random.choices(
+                        string.ascii_uppercase + string.digits,
+                        k=6,
+                    )
                 )
                 if candidate not in options:
                     options.append(candidate)
@@ -241,7 +277,10 @@ class CaptchaAnswerSelect(discord.ui.Select):
             return
 
         guild = interaction.guild
-        member = guild.get_member(interaction.user.id)
+        member = interaction.user
+
+        if not isinstance(member, discord.Member):
+            member = guild.get_member(interaction.user.id)
 
         if member is None:
             await interaction.response.send_message(
@@ -251,8 +290,17 @@ class CaptchaAnswerSelect(discord.ui.Select):
             )
             return
 
-        guild_config = get_guild_config(guild.id)
-        role_ids = guild_config.get("verification_role_ids", [])
+        # Prüfen, ob die Person inzwischen schon verifiziert wurde.
+        if is_already_verified(member):
+            await interaction.response.send_message(
+                "✅ Du bist bereits verifiziert!",
+                ephemeral=True,
+            )
+            return
+
+        role_ids = get_guild_config(guild.id).get(
+            "verification_role_ids", []
+        )
 
         if not role_ids:
             await interaction.response.send_message(
@@ -264,7 +312,11 @@ class CaptchaAnswerSelect(discord.ui.Select):
 
         roles_to_add = []
         for role_id in role_ids:
-            role = guild.get_role(int(role_id))
+            try:
+                role = guild.get_role(int(role_id))
+            except (TypeError, ValueError):
+                continue
+
             if role and is_manageable_role(guild, role):
                 roles_to_add.append(role)
 
@@ -297,8 +349,8 @@ class CaptchaAnswerSelect(discord.ui.Select):
             return
 
         await interaction.response.send_message(
-            "Verifizierung erfolgreich! Du hast jetzt Zugriff auf die "
-            "freigeschalteten Bereiche des Servers.",
+            "✅ Verifizierung erfolgreich! Du hast jetzt Zugriff auf "
+            "die freigeschalteten Bereiche des Servers.",
             ephemeral=True,
         )
 
@@ -317,7 +369,10 @@ class CaptchaView(discord.ui.View):
         options = [answer]
         while len(options) < 4:
             candidate = "".join(
-                random.choices(string.ascii_uppercase + string.digits, k=6)
+                random.choices(
+                    string.ascii_uppercase + string.digits,
+                    k=6,
+                )
             )
             if candidate not in options:
                 options.append(candidate)
@@ -351,6 +406,26 @@ class VerifyButton(discord.ui.Button):
         if interaction.guild is None:
             await interaction.response.send_message(
                 "Bitte nutze diese Schaltfläche auf dem Server.",
+                ephemeral=True,
+            )
+            return
+
+        member = interaction.user
+        if not isinstance(member, discord.Member):
+            member = interaction.guild.get_member(interaction.user.id)
+
+        if member is None:
+            await interaction.response.send_message(
+                "Dein Mitgliedsstatus konnte nicht geladen werden. "
+                "Bitte versuche es erneut.",
+                ephemeral=True,
+            )
+            return
+
+        # NEU: Bereits verifizierte Mitglieder brauchen kein CAPTCHA mehr.
+        if is_already_verified(member):
+            await interaction.response.send_message(
+                "✅ Du bist bereits verifiziert!",
                 ephemeral=True,
             )
             return
@@ -592,6 +667,9 @@ class EmbedModal(discord.ui.Modal, title="Embed erstellen"):
         raw_color = self.embed_color.value.strip().lstrip("#")
 
         try:
+            if raw_color and len(raw_color) != 6:
+                raise ValueError("Ungültige HEX-Länge")
+
             color = (
                 discord.Color(int(raw_color, 16))
                 if raw_color
@@ -667,7 +745,9 @@ async def on_member_join(member: discord.Member):
 
         if BLOCK_NEW_BOTS:
             try:
-                await member.kick(reason="Automatischer Schutz: neue Bots blockiert")
+                await member.kick(
+                    reason="Automatischer Schutz: neue Bots blockiert"
+                )
                 await security_log(
                     "Bot-Account entfernt",
                     f"Der neue Bot-Account `{member.id}` wurde entfernt.",
@@ -689,16 +769,22 @@ async def on_member_join(member: discord.Member):
 async def audit_actor(guild, action):
     try:
         async for entry in guild.audit_logs(limit=5, action=action):
-            if (datetime.now(timezone.utc) - entry.created_at).total_seconds() < 10:
+            if (
+                datetime.now(timezone.utc) - entry.created_at
+            ).total_seconds() < 10:
                 return entry.user
     except (discord.Forbidden, discord.HTTPException):
         return None
+
     return None
 
 
 @bot.event
 async def on_guild_channel_delete(channel):
-    actor = await audit_actor(channel.guild, discord.AuditLogAction.channel_delete)
+    actor = await audit_actor(
+        channel.guild,
+        discord.AuditLogAction.channel_delete,
+    )
     await security_log(
         "Anti-Nuke: Kanal gelöscht",
         f"**Kanal:** {channel.name}\n"
@@ -709,7 +795,10 @@ async def on_guild_channel_delete(channel):
 
 @bot.event
 async def on_guild_role_delete(role):
-    actor = await audit_actor(role.guild, discord.AuditLogAction.role_delete)
+    actor = await audit_actor(
+        role.guild,
+        discord.AuditLogAction.role_delete,
+    )
     await security_log(
         "Anti-Nuke: Rolle gelöscht",
         f"**Rolle:** {role.name}\n"
@@ -732,17 +821,21 @@ async def on_member_ban(guild, user):
 @bot.event
 async def on_webhooks_update(channel):
     actor = await audit_actor(
-        channel.guild, discord.AuditLogAction.webhook_create
+        channel.guild,
+        discord.AuditLogAction.webhook_create,
     )
+
     if actor is None:
         actor = await audit_actor(
-            channel.guild, discord.AuditLogAction.webhook_delete
+            channel.guild,
+            discord.AuditLogAction.webhook_delete,
         )
 
     await security_log(
         "Sicherheitsereignis: Webhooks geändert",
         f"**Kanal:** {channel.mention}\n"
-        f"**Möglicher Auslöser:** {actor.mention if actor else 'Unbekannt'}",
+        f"**Möglicher Auslöser:** "
+        f"{actor.mention if actor else 'Unbekannt'}",
         discord.Color.orange(),
     )
 
@@ -759,14 +852,20 @@ async def on_app_command_error(
     if isinstance(error, app_commands.MissingPermissions):
         message = "Du hast nicht die nötigen Berechtigungen für diesen Befehl."
     else:
-        log.exception("Fehler bei einem Slash-Befehl", exc_info=error)
+        log.error(
+            "Fehler bei einem Slash-Befehl",
+            exc_info=(type(error), error, error.__traceback__),
+        )
         message = "Beim Ausführen des Befehls ist ein Fehler aufgetreten."
 
     try:
         if interaction.response.is_done():
             await interaction.followup.send(message, ephemeral=True)
         else:
-            await interaction.response.send_message(message, ephemeral=True)
+            await interaction.response.send_message(
+                message,
+                ephemeral=True,
+            )
     except discord.HTTPException:
         pass
 
@@ -777,19 +876,12 @@ async def on_app_command_error(
 
 @bot.event
 async def on_ready():
-    log.info("Eingeloggt als %s (%s)", bot.user, bot.user.id if bot.user else "?")
+    log.info(
+        "Eingeloggt als %s (%s)",
+        bot.user,
+        bot.user.id if bot.user else "?",
+    )
     log.info("Bot ist bereit.")
 
-
-async def setup_hook():
-    # Persistent View: Verifizieren-Button funktioniert nach Bot-Neustart weiter.
-    bot.add_view(VerifyPanel())
-
-    synced = await bot.tree.sync()
-    log.info("%s Slash-Befehle synchronisiert.", len(synced))
-
-
-# setup_hook ist eine Methode des Bot-Objekts; wir binden sie hier ein.
-bot.setup_hook = setup_hook
 
 bot.run(TOKEN)
