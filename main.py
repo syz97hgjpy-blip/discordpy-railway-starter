@@ -1,455 +1,795 @@
+
 import os
-import asyncio
+import io
+import json
 import random
+import string
 import time
+import logging
 from collections import deque
+from datetime import datetime, timezone
 
 import discord
-from discord import app_commands
 from discord.ext import commands
+from discord import app_commands
+from PIL import Image, ImageDraw, ImageFont, ImageFilter
 
-
-# =========================================================
-# EINSTELLUNGEN – werden in Railway unter Variables gesetzt
-# =========================================================
+# ============================================================
+# KONFIGURATION
+# ============================================================
 
 TOKEN = os.getenv("DISCORD_TOKEN")
-LOG_CHANNEL_ID = int(os.getenv("SECURITY_LOG_CHANNEL_ID", "0"))
-VERIFY_ROLE_ID = int(os.getenv("VERIFY_ROLE_ID", "0"))
+SECURITY_LOG_CHANNEL_ID = int(os.getenv("SECURITY_LOG_CHANNEL_ID", "0"))
+CONFIG_FILE = os.getenv("VERIFICATION_CONFIG_FILE", "verification_config.json")
 
-RAID_JOIN_LIMIT = 8
-RAID_TIME_WINDOW = 60
+JOIN_WINDOW_SECONDS = 20
+JOIN_SPIKE_LIMIT = 8
+JOIN_TIMES = deque()
 
+# Optional: true = neu beitretende Bot-Accounts werden entfernt.
+# Nur aktivieren, wenn du wirklich KEINE neuen Bots zulassen willst.
+BLOCK_NEW_BOTS = os.getenv("BLOCK_NEW_BOTS", "false").lower() == "true"
 
-# =========================================================
-# BOT UND INTENTS
-# =========================================================
+logging.basicConfig(level=logging.INFO)
+log = logging.getLogger("server-security")
+
+if not TOKEN:
+    raise RuntimeError("Die Railway-Variable DISCORD_TOKEN fehlt!")
+
+# ============================================================
+# INTENTS UND BOT
+# ============================================================
 
 intents = discord.Intents.default()
+intents.guilds = True
 intents.members = True
 intents.moderation = True
+intents.webhooks = True
+intents.message_content = True
+
+bot = commands.Bot(command_prefix="!", intents=intents)
+
+# ============================================================
+# PERSISTENTE KONFIGURATION
+# ============================================================
+
+def load_config():
+    try:
+        with open(CONFIG_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return {}
 
 
-class SecurityBot(commands.Bot):
-    async def setup_hook(self):
-        # Slash-Befehle bei Discord registrieren
-        await self.tree.sync()
-        # Dauerhafte Verify-Buttons nach einem Neustart laden
-        self.add_view(VerifyPanelView())
+def save_config(data):
+    with open(CONFIG_FILE, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2)
 
 
-bot = SecurityBot(
-    command_prefix="!",
-    intents=intents,
-)
+config = load_config()
 
 
-# =========================================================
-# SECURITY-LOG
-# =========================================================
+def get_guild_config(guild_id):
+    return config.get(str(guild_id), {})
 
-async def send_security_log(guild, message):
-    if guild is None or LOG_CHANNEL_ID == 0:
+
+def set_verification_roles(guild_id, role_ids):
+    key = str(guild_id)
+    config.setdefault(key, {})
+    config[key]["verification_role_ids"] = role_ids
+    save_config(config)
+
+
+# ============================================================
+# SICHERHEITSLOGS
+# ============================================================
+
+async def security_log(title, description, color=discord.Color.orange()):
+    if not SECURITY_LOG_CHANNEL_ID:
+        log.warning("%s — %s", title, description)
         return
 
-    channel = guild.get_channel(LOG_CHANNEL_ID)
+    channel = bot.get_channel(SECURITY_LOG_CHANNEL_ID)
 
     if channel is None:
         try:
-            channel = await bot.fetch_channel(LOG_CHANNEL_ID)
+            channel = await bot.fetch_channel(SECURITY_LOG_CHANNEL_ID)
         except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+            log.warning("Sicherheits-Log-Kanal nicht erreichbar.")
             return
 
-    if not hasattr(channel, "send"):
-        return
+    embed = discord.Embed(
+        title=title,
+        description=description,
+        color=color,
+        timestamp=datetime.now(timezone.utc),
+    )
 
     try:
-        await channel.send(
-            message,
-            allowed_mentions=discord.AllowedMentions.none(),
-        )
+        await channel.send(embed=embed)
     except (discord.Forbidden, discord.HTTPException):
-        pass
+        log.exception("Sicherheitsmeldung konnte nicht gesendet werden.")
 
 
-# =========================================================
-# EMBED-SYSTEM
-# =========================================================
+def is_manageable_role(guild, role):
+    me = guild.me
+    if me is None:
+        return False
 
-class EmbedModal(discord.ui.Modal, title="Embed erstellen"):
-    embed_title = discord.ui.TextInput(
-        label="Titel",
-        placeholder="Titel deines Embeds",
-        max_length=256,
+    return (
+        role != guild.default_role
+        and not role.managed
+        and role < me.top_role
     )
 
-    embed_description = discord.ui.TextInput(
-        label="Beschreibung",
-        placeholder="Text für dein Embed",
-        style=discord.TextStyle.paragraph,
-        max_length=4000,
-    )
 
-    embed_color = discord.ui.TextInput(
-        label="Farbe als Hex-Code",
-        placeholder="5865F2",
-        default="5865F2",
-        required=True,
-        max_length=7,
-    )
+# ============================================================
+# CAPTCHA-BILD — wird automatisch erstellt
+# ============================================================
 
-    async def on_submit(self, interaction: discord.Interaction):
-        color_text = self.embed_color.value.strip().lstrip("#")
+def generate_captcha():
+    alphabet = string.ascii_uppercase + string.digits
+    answer = "".join(random.choices(alphabet, k=6))
 
+    width, height = 480, 170
+    image = Image.new("RGB", (width, height), (12, 12, 12))
+    draw = ImageDraw.Draw(image)
+
+    # Dezente Linien als Störung
+    for _ in range(12):
+        x1 = random.randint(0, width)
+        y1 = random.randint(0, height)
+        x2 = random.randint(0, width)
+        y2 = random.randint(0, height)
+        shade = random.randint(35, 65)
+        draw.line((x1, y1, x2, y2), fill=(shade, shade, shade), width=1)
+
+    # Dezente Punkte
+    for _ in range(150):
+        x = random.randint(0, width - 1)
+        y = random.randint(0, height - 1)
+        shade = random.randint(45, 85)
+        draw.point((x, y), fill=(shade, shade, shade))
+
+    try:
+        font = ImageFont.truetype("DejaVuSans-Bold.ttf", 52)
+    except OSError:
         try:
-            color_value = int(color_text, 16)
-            if len(color_text) not in (3, 6) or not (
-                0 <= color_value <= 0xFFFFFF
-            ):
-                raise ValueError
-        except ValueError:
-            await interaction.response.send_message(
-                "Ungültige Farbe. Verwende zum Beispiel `5865F2` oder `#5865F2`.",
-                ephemeral=True,
+            font = ImageFont.truetype(
+                "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 52
             )
-            return
+        except OSError:
+            font = ImageFont.load_default()
 
-        if len(color_text) == 3:
-            color_text = "".join(char * 2 for char in color_text)
-            color_value = int(color_text, 16)
+    # Zeichen mit kleinen Abständen zeichnen
+    char_widths = [
+        draw.textbbox((0, 0), char, font=font)[2]
+        for char in answer
+    ]
+    total_width = sum(char_widths) + 12 * (len(answer) - 1)
+    x = max(10, (width - total_width) // 2)
 
-        embed = discord.Embed(
-            title=self.embed_title.value,
-            description=self.embed_description.value,
-            color=discord.Color(color_value),
+    for char, char_width in zip(answer, char_widths):
+        y = random.randint(48, 70)
+        draw.text((x, y), char, font=font, fill=(245, 245, 245))
+        x += char_width + 12
+
+    image = image.filter(ImageFilter.SMOOTH)
+
+    buffer = io.BytesIO()
+    image.save(buffer, format="PNG")
+    buffer.seek(0)
+
+    return answer, buffer
+
+
+# ============================================================
+# CAPTCHA-AUSWAHL — privat für den jeweiligen Nutzer
+# ============================================================
+
+class CaptchaAnswerSelect(discord.ui.Select):
+    def __init__(self, answer, options):
+        self.correct_answer = answer
+
+        super().__init__(
+            placeholder="Wähle den Code aus dem Bild",
+            min_values=1,
+            max_values=1,
+            options=[
+                discord.SelectOption(label=option, value=option)
+                for option in options
+            ],
         )
-        embed.set_footer(text=f"Erstellt von {interaction.user.display_name}")
 
-        await interaction.response.send_message(
-            "Dein Embed wurde erstellt.",
-            ephemeral=True,
-        )
-
-        try:
-            await interaction.channel.send(embed=embed)
-        except (discord.Forbidden, discord.HTTPException, AttributeError):
-            await interaction.followup.send(
-                "Ich konnte das Embed hier nicht senden. Prüfe meine Kanalrechte.",
-                ephemeral=True,
-            )
-
-
-@bot.tree.command(
-    name="embed",
-    description="Erstellt ein Embed mit Titel, Text und Farbe.",
-)
-@app_commands.guild_only()
-@app_commands.checks.has_permissions(manage_messages=True)
-async def embed_command(interaction: discord.Interaction):
-    await interaction.response.send_modal(EmbedModal())
-
-
-@embed_command.error
-async def embed_command_error(
-    interaction: discord.Interaction,
-    error: app_commands.AppCommandError,
-):
-    if isinstance(error, app_commands.MissingPermissions):
-        message = "Du brauchst die Berechtigung „Nachrichten verwalten“."
-    else:
-        message = "Beim Öffnen des Embed-Menüs ist ein Fehler aufgetreten."
-
-    if interaction.response.is_done():
-        await interaction.followup.send(message, ephemeral=True)
-    else:
-        await interaction.response.send_message(message, ephemeral=True)
-
-
-# =========================================================
-# VERIFIZIERUNG MIT CAPTCHA
-# =========================================================
-
-class CaptchaModal(discord.ui.Modal, title="Verifizierung"):
-    def __init__(self, first_number: int, second_number: int):
-        super().__init__()
-        self.correct_answer = first_number + second_number
-
-        self.answer = discord.ui.TextInput(
-            label=f"Was ist {first_number} + {second_number}?",
-            placeholder="Gib die Zahl ein",
-            max_length=5,
-        )
-        self.add_item(self.answer)
-
-    async def on_submit(self, interaction: discord.Interaction):
-        if not self.answer.value.strip().isdigit():
-            await interaction.response.send_message(
-                "Das ist keine gültige Zahl. Versuche es erneut.",
-                ephemeral=True,
-            )
-            return
-
-        if int(self.answer.value.strip()) != self.correct_answer:
-            await interaction.response.send_message(
-                "Leider falsch. Drücke den Verifizieren-Button und versuche es erneut.",
-                ephemeral=True,
-            )
-            return
-
+    async def callback(self, interaction: discord.Interaction):
         if interaction.guild is None:
             await interaction.response.send_message(
-                "Die Verifizierung funktioniert nur auf einem Server.",
+                "Diese Verifizierung funktioniert nur auf dem Server.",
                 ephemeral=True,
             )
             return
 
-        if VERIFY_ROLE_ID == 0:
+        if self.values[0] != self.correct_answer:
+            answer, buffer = generate_captcha()
+            options = [answer]
+
+            while len(options) < 4:
+                candidate = "".join(
+                    random.choices(string.ascii_uppercase + string.digits, k=6)
+                )
+                if candidate not in options:
+                    options.append(candidate)
+
+            random.shuffle(options)
+
+            embed = discord.Embed(
+                title="Verifizierung",
+                description=(
+                    "Der Code war leider falsch. "
+                    "Versuche es mit dem neuen Bild erneut."
+                ),
+                color=discord.Color.dark_grey(),
+            )
+            embed.set_image(url="attachment://captcha.png")
+
             await interaction.response.send_message(
-                "Die Verify-Rolle ist noch nicht eingerichtet. Bitte informiere einen Admin.",
+                embed=embed,
+                file=discord.File(buffer, filename="captcha.png"),
+                view=CaptchaView(answer, interaction.user.id),
                 ephemeral=True,
             )
             return
 
-        role = interaction.guild.get_role(VERIFY_ROLE_ID)
-
-        if role is None:
-            await interaction.response.send_message(
-                "Die eingestellte Verify-Rolle wurde nicht gefunden. Bitte informiere einen Admin.",
-                ephemeral=True,
-            )
-            return
-
-        member = interaction.guild.get_member(interaction.user.id)
+        guild = interaction.guild
+        member = guild.get_member(interaction.user.id)
 
         if member is None:
             await interaction.response.send_message(
-                "Dein Mitgliedsprofil wurde nicht gefunden. Bitte versuche es erneut.",
+                "Dein Mitgliedsstatus konnte nicht geladen werden. "
+                "Bitte versuche es erneut.",
                 ephemeral=True,
             )
             return
 
-        if role >= interaction.guild.me.top_role:
+        guild_config = get_guild_config(guild.id)
+        role_ids = guild_config.get("verification_role_ids", [])
+
+        if not role_ids:
             await interaction.response.send_message(
-                "Meine Bot-Rolle muss in den Servereinstellungen über der Verify-Rolle stehen.",
+                "Die Verifizierung wurde noch nicht vollständig eingerichtet. "
+                "Bitte informiere das Serverteam.",
+                ephemeral=True,
+            )
+            return
+
+        roles_to_add = []
+        for role_id in role_ids:
+            role = guild.get_role(int(role_id))
+            if role and is_manageable_role(guild, role):
+                roles_to_add.append(role)
+
+        if not roles_to_add:
+            await interaction.response.send_message(
+                "Der Bot kann die eingerichteten Rollen nicht vergeben. "
+                "Bitte prüfe die Rollenposition des Bots.",
                 ephemeral=True,
             )
             return
 
         try:
-            await member.add_roles(role, reason="CAPTCHA-Verifizierung erfolgreich")
+            await member.add_roles(
+                *roles_to_add,
+                reason="Erfolgreiche CAPTCHA-Verifizierung",
+            )
         except discord.Forbidden:
             await interaction.response.send_message(
-                "Ich darf diese Rolle nicht vergeben. Prüfe meine Rollenrechte.",
+                "Der Bot darf die Rollen nicht vergeben. "
+                "Prüfe seine Berechtigungen und Rollenposition.",
                 ephemeral=True,
             )
             return
         except discord.HTTPException:
             await interaction.response.send_message(
-                "Discord hat die Rolle gerade nicht vergeben. Versuche es erneut.",
+                "Die Rollen konnten gerade nicht vergeben werden. "
+                "Bitte versuche es später erneut.",
                 ephemeral=True,
             )
             return
 
         await interaction.response.send_message(
-            "Du bist erfolgreich verifiziert!",
+            "Verifizierung erfolgreich! Du hast jetzt Zugriff auf die "
+            "freigeschalteten Bereiche des Servers.",
+            ephemeral=True,
+        )
+
+        await security_log(
+            "Verifizierung erfolgreich",
+            f"{member.mention} (`{member.id}`) hat das CAPTCHA bestanden.",
+            discord.Color.green(),
+        )
+
+
+class CaptchaView(discord.ui.View):
+    def __init__(self, answer, user_id):
+        super().__init__(timeout=180)
+        self.user_id = user_id
+
+        options = [answer]
+        while len(options) < 4:
+            candidate = "".join(
+                random.choices(string.ascii_uppercase + string.digits, k=6)
+            )
+            if candidate not in options:
+                options.append(candidate)
+
+        random.shuffle(options)
+        self.add_item(CaptchaAnswerSelect(answer, options))
+
+    async def interaction_check(self, interaction):
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message(
+                "Dieses CAPTCHA gehört zu einer anderen Person.",
+                ephemeral=True,
+            )
+            return False
+        return True
+
+
+# ============================================================
+# VERIFIZIERUNGS-PANEL
+# ============================================================
+
+class VerifyButton(discord.ui.Button):
+    def __init__(self):
+        super().__init__(
+            label="Verifizieren",
+            style=discord.ButtonStyle.success,
+            custom_id="verification:start",
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        if interaction.guild is None:
+            await interaction.response.send_message(
+                "Bitte nutze diese Schaltfläche auf dem Server.",
+                ephemeral=True,
+            )
+            return
+
+        answer, buffer = generate_captcha()
+
+        embed = discord.Embed(
+            title="CAPTCHA-Verifizierung",
+            description="Lies den Code im Bild und wähle die passende Antwort.",
+            color=discord.Color.dark_grey(),
+        )
+        embed.set_image(url="attachment://captcha.png")
+
+        await interaction.response.send_message(
+            embed=embed,
+            file=discord.File(buffer, filename="captcha.png"),
+            view=CaptchaView(answer, interaction.user.id),
             ephemeral=True,
         )
 
 
-class VerifyPanelView(discord.ui.View):
+class VerifyPanel(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
+        self.add_item(VerifyButton())
 
-    @discord.ui.button(
-        label="Jetzt verifizieren",
-        style=discord.ButtonStyle.success,
-        emoji="✅",
-        custom_id="security_bot:verify",
-    )
-    async def verify_button(
-        self,
-        interaction: discord.Interaction,
-        button: discord.ui.Button,
-    ):
-        if interaction.guild is None:
+
+# ============================================================
+# ADMIN-EINRICHTUNG — ROLLEN AUSWÄHLEN
+# ============================================================
+
+class VerificationRoleSelect(discord.ui.RoleSelect):
+    def __init__(self):
+        super().__init__(
+            placeholder="Rollen auswählen, die nach der Verifizierung vergeben werden",
+            min_values=1,
+            max_values=25,
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        if not interaction.user.guild_permissions.manage_guild:
             await interaction.response.send_message(
-                "Das funktioniert nur auf einem Server.",
+                "Dafür brauchst du die Berechtigung „Server verwalten“.",
                 ephemeral=True,
             )
             return
 
-        if VERIFY_ROLE_ID == 0:
+        guild = interaction.guild
+        if guild is None:
             await interaction.response.send_message(
-                "Die Verify-Rolle ist noch nicht eingerichtet. Bitte informiere einen Admin.",
+                "Diese Einrichtung funktioniert nur auf einem Server.",
                 ephemeral=True,
             )
             return
 
-        first = random.randint(1, 9)
-        second = random.randint(1, 9)
+        invalid = [
+            role for role in self.values
+            if not is_manageable_role(guild, role)
+        ]
 
-        await interaction.response.send_modal(CaptchaModal(first, second))
+        if invalid:
+            names = ", ".join(role.name for role in invalid)
+            await interaction.response.send_message(
+                "Diese Rollen kann der Bot nicht vergeben: "
+                f"{names}. Wähle nur Rollen unterhalb der höchsten Bot-Rolle "
+                "und keine verwalteten Rollen oder @everyone.",
+                ephemeral=True,
+            )
+            return
+
+        self.view.selected_role_ids = [role.id for role in self.values]
+
+        role_names = ", ".join(role.name for role in self.values)
+        await interaction.response.edit_message(
+            content=(
+                "**Verifizierungsrollen ausgewählt:**\n"
+                f"{role_names}\n\n"
+                "Klicke auf „Panel veröffentlichen“, um die Verifizierung "
+                "im aktuellen Kanal zu veröffentlichen."
+            ),
+            view=self.view,
+        )
+
+
+class PublishVerificationButton(discord.ui.Button):
+    def __init__(self):
+        super().__init__(
+            label="Panel veröffentlichen",
+            style=discord.ButtonStyle.primary,
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        if not interaction.user.guild_permissions.manage_guild:
+            await interaction.response.send_message(
+                "Dafür brauchst du die Berechtigung „Server verwalten“.",
+                ephemeral=True,
+            )
+            return
+
+        role_ids = getattr(self.view, "selected_role_ids", [])
+        if not role_ids:
+            await interaction.response.send_message(
+                "Wähle zuerst die Verifizierungsrollen aus.",
+                ephemeral=True,
+            )
+            return
+
+        guild = interaction.guild
+        channel = interaction.channel
+
+        if guild is None or channel is None:
+            await interaction.response.send_message(
+                "Der Server oder Kanal wurde nicht gefunden.",
+                ephemeral=True,
+            )
+            return
+
+        for role_id in role_ids:
+            role = guild.get_role(role_id)
+            if role is None or not is_manageable_role(guild, role):
+                await interaction.response.send_message(
+                    "Mindestens eine ausgewählte Rolle ist nicht mehr "
+                    "vergebbar. Bitte richte die Rollen erneut ein.",
+                    ephemeral=True,
+                )
+                return
+
+        set_verification_roles(guild.id, role_ids)
+
+        embed = discord.Embed(
+            title="Verifizierung",
+            description=(
+                "Willkommen auf dem Server!\n\n"
+                "Klicke auf **Verifizieren** und löse das CAPTCHA, "
+                "um auf weitere Inhalte des Servers zuzugreifen."
+            ),
+            color=discord.Color.dark_grey(),
+        )
+
+        try:
+            await channel.send(embed=embed, view=VerifyPanel())
+        except discord.Forbidden:
+            await interaction.response.send_message(
+                "Der Bot darf in diesem Kanal keine Nachrichten senden. "
+                "Prüfe seine Kanalberechtigungen.",
+                ephemeral=True,
+            )
+            return
+        except discord.HTTPException:
+            await interaction.response.send_message(
+                "Das Panel konnte nicht veröffentlicht werden.",
+                ephemeral=True,
+            )
+            return
+
+        await interaction.response.send_message(
+            "Das Verifizierungspanel wurde veröffentlicht.",
+            ephemeral=True,
+        )
+
+        await security_log(
+            "Verifizierung eingerichtet",
+            f"{interaction.user.mention} hat das Panel in "
+            f"{channel.mention} veröffentlicht.",
+            discord.Color.green(),
+        )
+
+
+class VerificationSetupView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=300)
+        self.selected_role_ids = []
+        self.add_item(VerificationRoleSelect())
+        self.add_item(PublishVerificationButton())
 
 
 @bot.tree.command(
-    name="verify_erstellen",
-    description="Erstellt das Verifizierungs-Panel in diesem Kanal.",
+    name="verification_system",
+    description="Richte das CAPTCHA-Verifizierungssystem ein",
 )
-@app_commands.guild_only()
 @app_commands.checks.has_permissions(manage_guild=True)
-async def verify_erstellen(interaction: discord.Interaction):
+async def verification_system(interaction: discord.Interaction):
+    if interaction.guild is None:
+        await interaction.response.send_message(
+            "Dieser Befehl funktioniert nur auf einem Server.",
+            ephemeral=True,
+        )
+        return
+
     embed = discord.Embed(
-        title="Server-Verifizierung",
+        title="Verifizierung einrichten",
         description=(
-            "Willkommen auf dem Server!\n\n"
-            "Klicke auf **Jetzt verifizieren** und löse die kurze Rechenaufgabe, "
-            "um die Verify-Rolle zu erhalten."
+            "Wähle die Rollen aus, die Mitglieder nach erfolgreicher "
+            "Verifizierung erhalten sollen. Der Bot akzeptiert nur Rollen, "
+            "die er laut seiner Rollenposition verwalten kann.\n\n"
+            "Danach klickst du auf „Panel veröffentlichen“."
         ),
-        color=discord.Color.green(),
+        color=discord.Color.dark_grey(),
     )
-    embed.set_footer(text="Security System")
 
     await interaction.response.send_message(
-        "Das Verifizierungs-Panel wurde erstellt.",
+        embed=embed,
+        view=VerificationSetupView(),
         ephemeral=True,
     )
-    await interaction.channel.send(embed=embed, view=VerifyPanelView())
 
 
-@verify_erstellen.error
-async def verify_command_error(
-    interaction: discord.Interaction,
-    error: app_commands.AppCommandError,
-):
-    if isinstance(error, app_commands.MissingPermissions):
-        message = "Du brauchst die Berechtigung „Server verwalten“."
-    else:
-        message = "Das Verify-Panel konnte nicht erstellt werden."
+# ============================================================
+# EMBED-SYSTEM — /embed
+# ============================================================
 
-    if interaction.response.is_done():
-        await interaction.followup.send(message, ephemeral=True)
-    else:
-        await interaction.response.send_message(message, ephemeral=True)
+class EmbedModal(discord.ui.Modal, title="Embed erstellen"):
+    embed_title = discord.ui.TextInput(
+        label="Titel",
+        placeholder="Titel deiner Nachricht",
+        max_length=256,
+    )
+    embed_description = discord.ui.TextInput(
+        label="Beschreibung",
+        placeholder="Text deiner Nachricht",
+        style=discord.TextStyle.paragraph,
+        max_length=4000,
+    )
+    embed_color = discord.ui.TextInput(
+        label="Farbe als HEX (optional)",
+        placeholder="#5865F2",
+        required=False,
+        max_length=7,
+    )
+
+    async def on_submit(self, interaction: discord.Interaction):
+        if interaction.guild is None:
+            await interaction.response.send_message(
+                "Dieser Befehl funktioniert nur auf einem Server.",
+                ephemeral=True,
+            )
+            return
+
+        raw_color = self.embed_color.value.strip().lstrip("#")
+
+        try:
+            color = (
+                discord.Color(int(raw_color, 16))
+                if raw_color
+                else discord.Color.blurple()
+            )
+        except ValueError:
+            await interaction.response.send_message(
+                "Ungültige Farbe. Nutze zum Beispiel `#5865F2`.",
+                ephemeral=True,
+            )
+            return
+
+        embed = discord.Embed(
+            title=self.embed_title.value,
+            description=self.embed_description.value,
+            color=color,
+        )
+
+        try:
+            await interaction.channel.send(embed=embed)
+        except discord.Forbidden:
+            await interaction.response.send_message(
+                "Der Bot darf in diesem Kanal keine Nachrichten senden.",
+                ephemeral=True,
+            )
+            return
+        except discord.HTTPException:
+            await interaction.response.send_message(
+                "Das Embed konnte nicht gesendet werden.",
+                ephemeral=True,
+            )
+            return
+
+        await interaction.response.send_message(
+            "Embed erfolgreich gesendet.",
+            ephemeral=True,
+        )
 
 
-# =========================================================
-# ANTI-RAID: VIELE BEITRITTE IN KURZER ZEIT
-# =========================================================
+@bot.tree.command(name="embed", description="Erstelle ein eigenes Embed")
+@app_commands.checks.has_permissions(manage_messages=True)
+async def embed_command(interaction: discord.Interaction):
+    await interaction.response.send_modal(EmbedModal())
 
-recent_joins = {}
 
+# ============================================================
+# ANTI-BOT / JOIN-SPIKE-SCHUTZ
+# ============================================================
 
 @bot.event
 async def on_member_join(member: discord.Member):
     now = time.monotonic()
-    joins = recent_joins.setdefault(member.guild.id, deque())
+    JOIN_TIMES.append(now)
 
-    joins.append(now)
+    while JOIN_TIMES and now - JOIN_TIMES[0] > JOIN_WINDOW_SECONDS:
+        JOIN_TIMES.popleft()
 
-    while joins and now - joins[0] > RAID_TIME_WINDOW:
-        joins.popleft()
+    if len(JOIN_TIMES) >= JOIN_SPIKE_LIMIT:
+        await security_log(
+            "Möglicher Join-Raid erkannt",
+            f"{len(JOIN_TIMES)} Mitglieder sind innerhalb von "
+            f"{JOIN_WINDOW_SECONDS} Sekunden beigetreten.",
+            discord.Color.red(),
+        )
+        JOIN_TIMES.clear()
 
-    if len(joins) >= RAID_JOIN_LIMIT:
-        await send_security_log(
-            member.guild,
-            "⚠️ **Möglicher Join-Raid erkannt**\n"
-            f"Auf dem Server sind innerhalb von {RAID_TIME_WINDOW} Sekunden "
-            f"{len(joins)} Mitglieder beigetreten.\n"
-            "Bitte prüfe die Beitritte und aktiviere bei Bedarf zusätzliche Schutzmaßnahmen.",
+    if member.bot:
+        await security_log(
+            "Neuer Bot-Account beigetreten",
+            f"{member.mention} (`{member.id}`) ist dem Server beigetreten.",
+            discord.Color.orange(),
         )
 
+        if BLOCK_NEW_BOTS:
+            try:
+                await member.kick(reason="Automatischer Schutz: neue Bots blockiert")
+                await security_log(
+                    "Bot-Account entfernt",
+                    f"Der neue Bot-Account `{member.id}` wurde entfernt.",
+                    discord.Color.red(),
+                )
+            except (discord.Forbidden, discord.HTTPException):
+                await security_log(
+                    "Bot konnte nicht entfernt werden",
+                    f"Der Bot-Account `{member.id}` konnte nicht automatisch "
+                    "entfernt werden. Prüfe die Berechtigungen.",
+                    discord.Color.red(),
+                )
 
-# =========================================================
-# ANTI-NUKE: AUDIT-LOG-ÜBERWACHUNG
-# =========================================================
 
-async def log_latest_audit_action(
-    guild: discord.Guild,
-    action: discord.AuditLogAction,
-    title: str,
-):
-    await asyncio.sleep(1.5)
+# ============================================================
+# ANTI-NUKE — VERDÄCHTIGE AKTIONEN PROTOKOLLIEREN
+# ============================================================
 
+async def audit_actor(guild, action):
     try:
         async for entry in guild.audit_logs(limit=5, action=action):
-            # Nur relativ neue Aktionen berücksichtigen
-            age = (discord.utils.utcnow() - entry.created_at).total_seconds()
-
-            if age > 20:
-                continue
-
-            target = entry.target
-            target_name = getattr(target, "name", str(target))
-            actor = entry.user
-            actor_name = str(actor) if actor else "Unbekannt"
-
-            await send_security_log(
-                guild,
-                f"🚨 **{title}**\n"
-                f"**Ausgeführt von:** {actor_name}\n"
-                f"**Betroffen:** {target_name}\n"
-                f"**Audit-Log-ID:** `{entry.id}`\n"
-                "Hinweis: Dies ist eine Erkennung und Meldung, keine automatische Rücknahme.",
-            )
-            return
-
+            if (datetime.now(timezone.utc) - entry.created_at).total_seconds() < 10:
+                return entry.user
     except (discord.Forbidden, discord.HTTPException):
-        await send_security_log(
-            guild,
-            f"⚠️ **{title}** erkannt, aber ich konnte das Audit-Log nicht lesen. "
-            "Prüfe meine Berechtigung „Audit-Log einsehen“.",
+        return None
+    return None
+
+
+@bot.event
+async def on_guild_channel_delete(channel):
+    actor = await audit_actor(channel.guild, discord.AuditLogAction.channel_delete)
+    await security_log(
+        "Anti-Nuke: Kanal gelöscht",
+        f"**Kanal:** {channel.name}\n"
+        f"**Ausgeführt von:** {actor.mention if actor else 'Unbekannt'}",
+        discord.Color.red(),
+    )
+
+
+@bot.event
+async def on_guild_role_delete(role):
+    actor = await audit_actor(role.guild, discord.AuditLogAction.role_delete)
+    await security_log(
+        "Anti-Nuke: Rolle gelöscht",
+        f"**Rolle:** {role.name}\n"
+        f"**Ausgeführt von:** {actor.mention if actor else 'Unbekannt'}",
+        discord.Color.red(),
+    )
+
+
+@bot.event
+async def on_member_ban(guild, user):
+    actor = await audit_actor(guild, discord.AuditLogAction.ban)
+    await security_log(
+        "Moderationsereignis: Ban",
+        f"**Nutzer:** {user} (`{user.id}`)\n"
+        f"**Ausgeführt von:** {actor.mention if actor else 'Unbekannt'}",
+        discord.Color.red(),
+    )
+
+
+@bot.event
+async def on_webhooks_update(channel):
+    actor = await audit_actor(
+        channel.guild, discord.AuditLogAction.webhook_create
+    )
+    if actor is None:
+        actor = await audit_actor(
+            channel.guild, discord.AuditLogAction.webhook_delete
         )
 
-
-@bot.event
-async def on_guild_channel_delete(channel: discord.abc.GuildChannel):
-    await log_latest_audit_action(
-        channel.guild,
-        discord.AuditLogAction.channel_delete,
-        "Kanal gelöscht – mögliche Nuke-Aktion",
+    await security_log(
+        "Sicherheitsereignis: Webhooks geändert",
+        f"**Kanal:** {channel.mention}\n"
+        f"**Möglicher Auslöser:** {actor.mention if actor else 'Unbekannt'}",
+        discord.Color.orange(),
     )
 
 
-@bot.event
-async def on_guild_role_delete(role: discord.Role):
-    await log_latest_audit_action(
-        role.guild,
-        discord.AuditLogAction.role_delete,
-        "Rolle gelöscht – mögliche Nuke-Aktion",
-    )
+# ============================================================
+# FEHLERBEHANDLUNG
+# ============================================================
+
+@bot.tree.error
+async def on_app_command_error(
+    interaction: discord.Interaction,
+    error: app_commands.AppCommandError,
+):
+    if isinstance(error, app_commands.MissingPermissions):
+        message = "Du hast nicht die nötigen Berechtigungen für diesen Befehl."
+    else:
+        log.exception("Fehler bei einem Slash-Befehl", exc_info=error)
+        message = "Beim Ausführen des Befehls ist ein Fehler aufgetreten."
+
+    try:
+        if interaction.response.is_done():
+            await interaction.followup.send(message, ephemeral=True)
+        else:
+            await interaction.response.send_message(message, ephemeral=True)
+    except discord.HTTPException:
+        pass
 
 
-@bot.event
-async def on_member_ban(guild: discord.Guild, user: discord.User):
-    await log_latest_audit_action(
-        guild,
-        discord.AuditLogAction.ban,
-        f"Ban erkannt für {user}",
-    )
-
-
-@bot.event
-async def on_webhooks_update(channel: discord.abc.GuildChannel):
-    await log_latest_audit_action(
-        channel.guild,
-        discord.AuditLogAction.webhook_create,
-        "Webhook erstellt oder geändert – bitte Audit-Log prüfen",
-    )
-
-
-# =========================================================
+# ============================================================
 # START
-# =========================================================
+# ============================================================
 
 @bot.event
 async def on_ready():
-    print(f"Bot online: {bot.user} (ID: {bot.user.id})")
-    print("Security-Bot wurde gestartet.")
+    log.info("Eingeloggt als %s (%s)", bot.user, bot.user.id if bot.user else "?")
+    log.info("Bot ist bereit.")
 
 
-if not TOKEN:
-    raise RuntimeError(
-        "DISCORD_TOKEN fehlt. Bitte setze die Variable in Railway."
-    )
+async def setup_hook():
+    # Persistent View: Verifizieren-Button funktioniert nach Bot-Neustart weiter.
+    bot.add_view(VerifyPanel())
+
+    synced = await bot.tree.sync()
+    log.info("%s Slash-Befehle synchronisiert.", len(synced))
+
+
+# setup_hook ist eine Methode des Bot-Objekts; wir binden sie hier ein.
+bot.setup_hook = setup_hook
 
 bot.run(TOKEN)
