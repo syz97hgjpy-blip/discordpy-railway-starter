@@ -48,9 +48,7 @@ intents.message_content = True
 
 class SecurityBot(commands.Bot):
     async def setup_hook(self):
-        # Persistent View: Verifizierungsbutton bleibt nach Neustarts aktiv.
         self.add_view(VerifyPanel())
-
         synced = await self.tree.sync()
         log.info("%s Slash-Befehle synchronisiert.", len(synced))
 
@@ -89,7 +87,6 @@ def set_verification_roles(guild_id, role_ids):
 
 
 def get_configured_roles(guild):
-    """Gibt die eingerichteten Rollen zurück, die noch existieren."""
     role_ids = get_guild_config(guild.id).get("verification_role_ids", [])
     roles = []
 
@@ -106,7 +103,6 @@ def get_configured_roles(guild):
 
 
 def is_already_verified(member):
-    """Als verifiziert gilt ein Mitglied, wenn es alle eingerichteten Rollen hat."""
     roles = get_configured_roles(member.guild)
     return bool(roles) and all(role in member.roles for role in roles)
 
@@ -159,7 +155,7 @@ def is_manageable_role(guild, role):
 
 
 # ============================================================
-# CAPTCHA-BILD — wird automatisch erstellt
+# CAPTCHA-BILD
 # ============================================================
 
 def generate_captcha():
@@ -217,7 +213,7 @@ def generate_captcha():
 
 
 # ============================================================
-# CAPTCHA-AUSWAHL — privat für den jeweiligen Nutzer
+# CAPTCHA-AUSWAHL
 # ============================================================
 
 class CaptchaAnswerSelect(discord.ui.Select):
@@ -248,10 +244,7 @@ class CaptchaAnswerSelect(discord.ui.Select):
 
             while len(options) < 4:
                 candidate = "".join(
-                    random.choices(
-                        string.ascii_uppercase + string.digits,
-                        k=6,
-                    )
+                    random.choices(string.ascii_uppercase + string.digits, k=6)
                 )
                 if candidate not in options:
                     options.append(candidate)
@@ -290,7 +283,6 @@ class CaptchaAnswerSelect(discord.ui.Select):
             )
             return
 
-        # Prüfen, ob die Person inzwischen schon verifiziert wurde.
         if is_already_verified(member):
             await interaction.response.send_message(
                 "✅ Du bist bereits verifiziert!",
@@ -298,9 +290,7 @@ class CaptchaAnswerSelect(discord.ui.Select):
             )
             return
 
-        role_ids = get_guild_config(guild.id).get(
-            "verification_role_ids", []
-        )
+        role_ids = get_guild_config(guild.id).get("verification_role_ids", [])
 
         if not role_ids:
             await interaction.response.send_message(
@@ -369,10 +359,7 @@ class CaptchaView(discord.ui.View):
         options = [answer]
         while len(options) < 4:
             candidate = "".join(
-                random.choices(
-                    string.ascii_uppercase + string.digits,
-                    k=6,
-                )
+                random.choices(string.ascii_uppercase + string.digits, k=6)
             )
             if candidate not in options:
                 options.append(candidate)
@@ -422,7 +409,6 @@ class VerifyButton(discord.ui.Button):
             )
             return
 
-        # NEU: Bereits verifizierte Mitglieder brauchen kein CAPTCHA mehr.
         if is_already_verified(member):
             await interaction.response.send_message(
                 "✅ Du bist bereits verifiziert!",
@@ -871,11 +857,16 @@ async def on_app_command_error(
 
 
 # ============================================================
-# START
+# START + SPIELSTATUS IM BOT-PROFIL
 # ============================================================
 
 @bot.event
 async def on_ready():
+    await bot.change_presence(
+        activity=discord.Game(name="One Shot Warfire"),
+        status=discord.Status.online,
+    )
+
     log.info(
         "Eingeloggt als %s (%s)",
         bot.user,
