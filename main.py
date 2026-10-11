@@ -1,4 +1,3 @@
-
 import os
 import io
 import json
@@ -549,6 +548,11 @@ class PublishVerificationButton(discord.ui.Button):
                 "um auf weitere Inhalte des Servers zuzugreifen."
             ),
             color=discord.Color.dark_grey(),
+        )
+
+        # Banner im Verify-Panel
+        embed.set_image(
+            url="https://raw.githubusercontent.com/syz97hgjpy-blip/discordpy-railway-starter/main/049411AC-6B6A-4BED-B5E1-B3175C92AC6B.png"
         )
 
         try:
